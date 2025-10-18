@@ -1,13 +1,26 @@
 Music Mood Detector
-Music Mood Detector is an AI‑powered web application that analyses a photo and recommends music to match the mood of the scene. Users can upload or take a picture, and the system uses state‑of‑the‑art image captioning and object‑detection models to understand what is happening in the image. It then infers an emotional tone (e.g. focus, relaxed, romantic, wind‑down) and queries Spotify for playlists or recommended tracks that fit that mood. The app is built with Python and Streamlit and modularises the logic across several helper files for captioning, entity detection, mood inference and Spotify integration[1].
+
+Music Mood Detector is an AI‑powered web application that analyses a photo and recommends music to match the mood of the scene. Users can upload or take a picture, and the system uses state‑of‑the‑art image captioning and object‑detection models to understand what is happening in the image. It then infers an emotional tone (e.g. focus, relaxed, romantic, wind‑down) and queries Spotify for playlists or recommended tracks that fit that mood. The app is built with Python and Streamlit and modularises the logic across several helper files for captioning, entity detection, mood inference and Spotify integration
+github.com
+.
+
 Features
-•	Photo‑driven music recommendations – Upload a photo or take a snapshot with your webcam. The application uses deep learning to analyse the scene and select a fitting playlist.
-•	Modern image captioning – The default captioner relies on a pretrained BLIP large model which produces rich descriptions of a scene (e.g. “a Swiss lakeside city skyline with church spires” instead of simply “a body of water”). This caption feeds into the mood inference engine.
-•	Entity detection for context – A separate module uses OWL‑ViT to detect objects such as flags, city skylines, churches, bridges, people and other high‑level cues that aren’t always captured by a caption. These entities are appended to the caption and help refine the mood classification.
-•	LLM caption refinement (optional) – If you have Ollama running locally with a multimodal model like qwen2.5‑vl, the app can query the LLM to improve the rough caption by incorporating detected entities and obvious landmarks. This step is optional and can be skipped on slower hardware.
-•	Flexible mood mapping – The file mood_infer.py defines a set of moods (focus, workout, morning, wind‑down, hype, drive, rainy day, relaxed, romantic, creative flow, melancholy, inspired, confident, social, sleep and ambiguous) and the corresponding Spotify seed genres and audio‑feature targets. The mood inference function chooses a mood based on the caption and entities and can fall back to generic playlists if it fails to find an exact match.
-•	Spotify integration – spotify_helper.py wraps the Spotipy library to authenticate to the Spotify Web API and either request recommendations or search curated playlists. If the recommendations endpoint returns no results, the helper falls back to searching playlists by mood and randomly picking tracks.
-•	Streamlit user interface – main.py implements a simple web interface where users can upload photos, choose an optional mood hint, see the detected caption and entities, and view the resulting playlist with clickable track links. The app runs locally with Streamlit but can be deployed to services such as Streamlit Cloud.
+
+Photo‑driven music recommendations – Upload a photo or take a snapshot with your webcam. The application uses deep learning to analyse the scene and select a fitting playlist.
+
+Modern image captioning – The default captioner relies on a pretrained BLIP large model which produces rich descriptions of a scene (e.g. “a Swiss lakeside city skyline with church spires” instead of simply “a body of water”). This caption feeds into the mood inference engine.
+
+Entity detection for context – A separate module uses OWL‑ViT to detect objects such as flags, city skylines, churches, bridges, people and other high‑level cues that aren’t always captured by a caption. These entities are appended to the caption and help refine the mood classification.
+
+LLM caption refinement (optional) – If you have Ollama
+ running locally with a multimodal model like qwen2.5‑vl, the app can query the LLM to improve the rough caption by incorporating detected entities and obvious landmarks. This step is optional and can be skipped on slower hardware.
+
+Flexible mood mapping – The file mood_infer.py defines a set of moods (focus, workout, morning, wind‑down, hype, drive, rainy day, relaxed, romantic, creative flow, melancholy, inspired, confident, social, sleep and ambiguous) and the corresponding Spotify seed genres and audio‑feature targets. The mood inference function chooses a mood based on the caption and entities and can fall back to generic playlists if it fails to find an exact match.
+
+Spotify integration – spotify_helper.py wraps the Spotipy library to authenticate to the Spotify Web API and either request recommendations or search curated playlists. If the recommendations endpoint returns no results, the helper falls back to searching playlists by mood and randomly picking tracks.
+
+Streamlit user interface – main.py implements a simple web interface where users can upload photos, choose an optional mood hint, see the detected caption and entities, and view the resulting playlist with clickable track links. The app runs locally with Streamlit but can be deployed to services such as Streamlit Cloud.
+
 Project layout
 Music-Mood-Detector/
 ├── captioner.py        # Functions to generate image captions using BLIP large
@@ -18,40 +31,76 @@ Music-Mood-Detector/
 ├── main.py             # Streamlit app entry‑point
 ├── keys.py             # Store Spotify credentials (for local development)
 └── README.md           # This documentation
+
+
 Note: Only keys.py should contain your Spotify Client ID and Secret. Never commit these values to a public repository.
+
 Installation
-1.	Clone the repository:
- 	git clone https://github.com/DeepD99/Music-Mood-Detector.git
+
+Clone the repository:
+
+git clone https://github.com/DeepD99/Music-Mood-Detector.git
 cd Music-Mood-Detector
-2.	Create a virtual environment (recommended):
- 	python3 -m venv .venv
+
+
+Create a virtual environment (recommended):
+
+python3 -m venv .venv
 source .venv/bin/activate
-3.	Install dependencies: The app relies on modern versions of PyTorch, Hugging Face Transformers, Spotipy, Pillow and Streamlit. Install them with:
- 	pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+
+Install dependencies: The app relies on modern versions of PyTorch, Hugging Face Transformers, Spotipy, Pillow and Streamlit. Install them with:
+
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 pip install transformers==4.*
 pip install spotipy streamlit pillow requests
- 	If you plan to use the caption refinement with Ollama, follow the instructions at https://ollama.com/ to install the Ollama CLI and pull the qwen2.5-vl model:
- 	ollama pull qwen2.5-vl
-4.	Set up Spotify credentials:
-5.	Create a Spotify Developer account.
-6.	Create a new application and obtain your Client ID and Client Secret.
-7.	Either export them as environment variables:
- 	export SPOTIPY_CLIENT_ID="your_client_id"
+
+
+If you plan to use the caption refinement with Ollama, follow the instructions at https://ollama.com/
+ to install the Ollama CLI and pull the qwen2.5-vl model:
+
+ollama pull qwen2.5-vl
+
+
+Set up Spotify credentials:
+
+Create a Spotify Developer account
+.
+
+Create a new application and obtain your Client ID and Client Secret.
+
+Either export them as environment variables:
+
+export SPOTIPY_CLIENT_ID="your_client_id"
 export SPOTIPY_CLIENT_SECRET="your_client_secret"
- 	or edit keys.py to assign SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET directly. The app will try to load from environment variables first.
+
+
+or edit keys.py to assign SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET directly. The app will try to load from environment variables first.
+
 Usage
-1.	Run the app: Start the Streamlit server from the project root:
- 	streamlit run main.py
-2.	Open in your browser: Streamlit will provide a local URL (e.g. http://localhost:8501). Visit the page to use the app.
-3.	Upload or capture a photo: Use the file uploader or camera widget to provide an image. Optionally select a hint (focus, workout, morning, etc.) or let the app auto‑detect the mood.
-4.	Analyse mood: Click the “Analyse mood” button. The app will generate a caption, detect entities and (optionally) refine the caption with an LLM. It will then infer a mood and query Spotify for suitable tracks. The recommended songs appear below with links to open them in Spotify.
+
+Run the app: Start the Streamlit server from the project root:
+
+streamlit run main.py
+
+
+Open in your browser: Streamlit will provide a local URL (e.g. http://localhost:8501
+). Visit the page to use the app.
+
+Upload or capture a photo: Use the file uploader or camera widget to provide an image. Optionally select a hint (focus, workout, morning, etc.) or let the app auto‑detect the mood.
+
+Analyse mood: Click the “Analyse mood” button. The app will generate a caption, detect entities and (optionally) refine the caption with an LLM. It will then infer a mood and query Spotify for suitable tracks. The recommended songs appear below with links to open them in Spotify.
+
 Extending the project
-•	Add more moods: You can expand the presets dictionary in mood_infer.py with additional moods and adjust their seed genres and feature targets.
-•	Improve the mood inference: For a fully automated approach, consider using the judge LLM to choose a mood from a dynamic list of moods based on the caption and entities. A separate moods.json file can hold the mood catalogue which the LLM can consult.
-•	Swap models: You can experiment with different captioning models (e.g. VisualGPT or InstructBLIP) or detection models (e.g. SAM + OWL‑V2) to improve accuracy. Replace the functions in captioner.py or entity_detect.py accordingly.
-•	Deploy online: Once the app works locally, push your code to a repository and deploy to Streamlit Cloud or another hosting service. Remember to set environment variables securely in your deployment settings.
+
+Add more moods: You can expand the presets dictionary in mood_infer.py with additional moods and adjust their seed genres and feature targets.
+
+Improve the mood inference: For a fully automated approach, consider using the judge LLM to choose a mood from a dynamic list of moods based on the caption and entities. A separate moods.json file can hold the mood catalogue which the LLM can consult.
+
+Swap models: You can experiment with different captioning models (e.g. VisualGPT or InstructBLIP) or detection models (e.g. SAM + OWL‑V2) to improve accuracy. Replace the functions in captioner.py or entity_detect.py accordingly.
+
+Deploy online: Once the app works locally, push your code to a repository and deploy to Streamlit Cloud or another hosting service. Remember to set environment variables securely in your deployment settings.
+
 Disclaimer
+
 This project is intended for educational purposes. Music recommendations are based on heuristic mapping of moods to Spotify audio features and may not suit everyone’s taste. Spotify API quotas apply; heavy usage may require caching or additional error handling. Please respect copyright when sharing or distributing recommended tracks.
-________________________________________
-[1] Add files via upload · DeepD99/Music-Mood-Detector@051c9e3 · GitHub
-https://github.com/DeepD99/Music-Mood-Detector/commit/051c9e3fb3d61586069fbbfeff21a4f7f34ae61a
