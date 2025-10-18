@@ -1,51 +1,85 @@
+# spotify_helper.py
+# Playlist-search only (no deprecated /recommendations or /available-genre-seeds).
+# Strategy:
+#   1) Search mood playlists by name (strict + loose; with market, then without)
+#   2) If needed, try multiple offsets inside the playlist to avoid empty pages
+#   3) If still empty, search by genre keywords (normalized)
+#   4) Special broader fallback for "wind-down"/"sleep"
+# Returns: {"tracks": [...], "source": "playlist-search", "playlist": "<name or None>"}
+
 import os
 import random
+from typing import List, Dict, Tuple, Optional
+
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 from spotipy.exceptions import SpotifyException
 
-# Set your credentials as environment variables (recommended)
-SPOTIFY_CLIENT_ID = "314ff7c4615f4f36bf152bd13c3870da"
-SPOTIFY_CLIENT_SECRET = "8c26158bec9e4759a3cae0156e5a3769"
+# ── Credentials ──────────────────────────────────────────────────────────────
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID", "YOUR_CLIENT_ID_HERE")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET", "YOUR_CLIENT_SECRET_HERE")
 
 sp = spotipy.Spotify(
     auth_manager=SpotifyClientCredentials(
         client_id=SPOTIFY_CLIENT_ID,
-        client_secret=SPOTIFY_CLIENT_SECRET
+        client_secret=SPOTIFY_CLIENT_SECRET,
     )
 )
 
-# Keep a stable subset of valid seeds (we won't query Spotify for these)
-KNOWN_SEEDS = {
-    "acoustic","ambient","chill","classical","dance","edm","electronic","hip-hop",
-    "house","indie","indie-pop","jazz","movies","pop","r-n-b","rock","sleep",
-    "soul","study","synth-pop","techno"
-}
-
+# ── Normalize your internal genres into search keywords ──────────────────────
 GENRE_NORMALIZER = {
-    "lofi": "study", "lo-fi": "study",
-    "rnb": "r-n-b", "r&b": "r-n-b",
-    "alt": "indie", "alt-rock": "rock",
+    "lofi": "study",
+    "lo-fi": "study",
+    "rnb": "r-n-b",
+    "r&b": "r-n-b",
+    "alt": "indie",
+    "alt-rock": "rock",
     "synthwave": "synth-pop",
     "cinematic": "movies",
     "chillhop": "chill",
     # pass-throughs
-    "electronic":"electronic","house":"house","techno":"techno","dance":"dance",
-    "pop":"pop","hip-hop":"hip-hop","edm":"edm","jazz":"jazz","classical":"classical",
-    "chill":"chill","acoustic":"acoustic","soul":"soul","indie":"indie",
-    "indie-pop":"indie-pop","synth-pop":"synth-pop","study":"study","sleep":"sleep",
-    "movies":"movies","rock":"rock",
+    "electronic": "electronic",
+    "house": "house",
+    "techno": "techno",
+    "dance": "dance",
+    "pop": "pop",
+    "hip-hop": "hip-hop",
+    "edm": "edm",
+    "jazz": "jazz",
+    "classical": "classical",
+    "chill": "chill",
+    "acoustic": "acoustic",
+    "soul": "soul",
+    "indie": "indie",
+    "indie-pop": "indie-pop",
+    "synth-pop": "synth-pop",
+    "study": "study",
+    "sleep": "sleep",
+    "movies": "movies",
+    "rock": "rock",
+    "ambient": "ambient",
 }
 
-# Preferred playlist names to search per mood (we will NOT hardcode IDs)
-MOOD_PLAYLIST_QUERIES = {
-    "focus":        ["Deep Focus", "Lo-Fi Beats", "Focus Flow", "Instrumental Study"],
+def _normalize_seeds(seed_genres: List[str]) -> List[str]:
+    out = []
+    for g in (seed_genres or []):
+        k = GENRE_NORMALIZER.get(g.lower().strip(), g.lower().strip())
+        if k and k not in out:
+            out.append(k)
+    if not out:
+        out = ["chill"]
+    return out[:3]
+
+# ── Mood → playlist search queries (expanded wind-down) ──────────────────────
+MOOD_PLAYLIST_QUERIES: Dict[str, List[str]] = {
+    "focus":        ["Deep Focus", "Focus Flow", "Instrumental Study", "Lo-Fi Beats"],
     "relaxed":      ["Chill Hits", "Chill Vibes", "Relax & Unwind"],
-    "wind-down":    ["Sleep", "Calm Vibes", "Peaceful Piano"],
-    "sleep":        ["Sleep", "Deep Sleep", "Peaceful Piano"],
+    "wind-down":    ["Sleep", "Calm Vibes", "Peaceful Piano", "Deep Sleep", "Calm Piano",
+                     "Ambient Chill", "Lo-Fi Sleep", "Rest & Unwind", "Sleep Sounds"],
+    "sleep":        ["Sleep", "Deep Sleep", "Peaceful Piano", "Sleep Sounds"],
     "workout":      ["Beast Mode", "Power Workout", "Cardio"],
     "hype":         ["Dance Hits", "Hype", "Party"],
-    "social":       ["Dance Hits", "All Out 00s/10s", "Pop Party"],
+    "social":       ["Dance Hits", "Pop Party", "All Out 2010s"],
     "morning":      ["Morning Acoustic", "Wake Up Happy", "Morning Coffee"],
     "drive":        ["Night Rider", "Driving Rock", "Drive"],
     "rainy day":    ["Rainy Day", "Cozy Acoustic", "Lush Lofi"],
@@ -57,103 +91,148 @@ MOOD_PLAYLIST_QUERIES = {
     "ambiguous":    ["Chill Hits", "Feelin' Good", "Pop Right Now"],
 }
 
-def _normalize_and_filter_seeds(seed_genres):
-    out = []
-    for g in (seed_genres or []):
-        g = GENRE_NORMALIZER.get(g.lower().strip(), g.lower().strip())
-        if g in KNOWN_SEEDS:
-            out.append(g)
-    if not out:
-        out = ["pop", "indie"]
-    return out[:5]
+# ── Simple in-memory cache for playlist id lookups ───────────────────────────
+_playlist_cache: Dict[str, Tuple[str, str]] = {}  # key -> (playlist_id, playlist_name)
 
-def _tracks_from_playlist_id(playlist_id, market="US", limit=10):
-    items = sp.playlist_items(playlist_id, market=market, additional_types=("track",)).get("items", [])
-    random.shuffle(items)
-    tracks = []
-    for it in items:
-        t = it.get("track")
-        if not t:
-            continue
-        tracks.append({
-            "name": t["name"],
-            "artist": ", ".join(a["name"] for a in t["artists"]),
-            "url": t["external_urls"]["spotify"]
-        })
-        if len(tracks) >= limit:
-            break
-    return tracks
+# ── Helpers: robust playlist search & track fetch ────────────────────────────
+def _search_playlist_id_by_name(query: str, market: Optional[str]) -> Optional[Tuple[str, str]]:
+    """
+    Try strict fielded search first (playlist:"Name"), then loose ("Name").
+    If nothing is found, retry WITHOUT market (some regions restrict results).
+    """
+    key = f"{(market or '').lower()}::strict::{query.lower()}"
+    if key in _playlist_cache:
+        return _playlist_cache[key]
 
-def _search_playlist_and_get_tracks(queries, market="US", limit=10):
-    """Search by a list of names; return first playlist's tracks that works."""
-    for q in queries:
+    def _try(q: str, mkt: Optional[str]):
         try:
-            res = sp.search(q=f'playlist:"{q}"', type="playlist", limit=1, market=market)
+            res = sp.search(q=q, type="playlist", limit=1, market=mkt)
             items = res.get("playlists", {}).get("items", [])
+            if items:
+                pid = items[0]["id"]
+                pname = items[0].get("name", query)
+                return (pid, pname)
+        except Exception:
+            return None
+        return None
+
+    # 1) strict w/ market
+    pid_name = _try(f'playlist:"{query}"', market)
+    # 2) loose w/ market
+    if not pid_name:
+        pid_name = _try(query, market)
+    # 3) strict no market
+    if not pid_name and market:
+        pid_name = _try(f'playlist:"{query}"', None)
+    # 4) loose no market
+    if not pid_name and market:
+        pid_name = _try(query, None)
+
+    if pid_name:
+        _playlist_cache[key] = pid_name
+        return pid_name
+    return None
+
+def _tracks_from_playlist_id_with_offsets(pid: str, market: Optional[str], limit: int) -> List[Dict]:
+    """
+    Try a few offsets to avoid empty/region-limited early pages, then shuffle.
+    """
+    for _ in range(3):
+        try:
+            offset = random.choice([0, 25, 50])
+            res = sp.playlist_items(pid, market=market, additional_types=("track",), limit=100, offset=offset)
+            items = res.get("items", [])
             if not items:
                 continue
-            pid = items[0]["id"]
-            tracks = _tracks_from_playlist_id(pid, market=market, limit=limit)
-            if tracks:
-                return tracks
+            random.shuffle(items)
+            tracks: List[Dict] = []
+            for it in items:
+                t = it.get("track")
+                if not t:
+                    continue
+                tracks.append({
+                    "name": t["name"],
+                    "artist": ", ".join(a["name"] for a in t.get("artists", [])),
+                    "url": t["external_urls"]["spotify"],
+                })
+                if len(tracks) >= limit:
+                    return tracks
         except SpotifyException:
             continue
         except Exception:
             continue
     return []
 
-def _genre_playlist_fallback(seeds, market="US", limit=10):
-    """As a last resort, search playlists by genre keywords."""
+def _search_playlist_and_get_tracks(queries: List[str], market: Optional[str], limit: int) -> Tuple[List[Dict], Optional[str]]:
+    """
+    Try each candidate name; return (tracks, playlist_name) for the first
+    playlist that yields tracks (with random offsets).
+    """
+    for q in (queries or []):
+        pid_name = _search_playlist_id_by_name(q, market)
+        if not pid_name:
+            continue
+        pid, pname = pid_name
+        tracks = _tracks_from_playlist_id_with_offsets(pid, market, limit)
+        if tracks:
+            return tracks, pname
+    return [], None
+
+def _search_genre_playlists(seeds: List[str], market: Optional[str], limit: int) -> Tuple[List[Dict], Optional[str]]:
+    """
+    Search by genre keywords (normalized seeds). First that returns tracks wins.
+    """
     for g in seeds:
-        tracks = _search_playlist_and_get_tracks([g], market=market, limit=limit)
+        pid_name = _search_playlist_id_by_name(g, market)
+        if not pid_name:
+            continue
+        pid, pname = pid_name
+        tracks = _tracks_from_playlist_id_with_offsets(pid, market, limit)
         if tracks:
-            return tracks
-    # absolute last resort: generic "Chill" search
-    return _search_playlist_and_get_tracks(["Chill"], market=market, limit=limit)
-
-def get_spotify_recommendations(seed_genres, features, limit=10, market="US", mood_for_fallback="ambiguous"):
-    seeds = _normalize_and_filter_seeds(seed_genres)
-    params = dict(limit=limit, seed_genres=seeds, market=market)
-
-    allowed = {
-        "target_tempo","min_tempo","max_tempo",
-        "target_energy","min_energy","max_energy",
-        "target_valence","min_valence","max_valence",
-        "target_danceability","min_danceability","max_danceability",
-        "target_instrumentalness","min_instrumentalness","max_instrumentalness",
-        "target_acousticness","min_acousticness","max_acousticness"
-    }
-    for k, v in (features or {}).items():
-        if k in allowed:
-            params[k] = v
-
-    # 1) Try recommendations
-    try:
-        recs = sp.recommendations(**params)
-        tracks = [{
-            "name": t["name"],
-            "artist": ", ".join(a["name"] for a in t["artists"]),
-            "url": t["external_urls"]["spotify"]
-        } for t in recs.get("tracks", [])]
+            return tracks, pname
+    # Absolute last resort: generic chill
+    pid_name = _search_playlist_id_by_name("Chill", market)
+    if pid_name:
+        pid, pname = pid_name
+        tracks = _tracks_from_playlist_id_with_offsets(pid, market, limit)
         if tracks:
-            return tracks
-    except SpotifyException:
-        pass
-    except Exception:
-        pass
+            return tracks, pname
+    return [], None
 
-    # 2) Mood playlist search fallback
-    tracks = _search_playlist_and_get_tracks(MOOD_PLAYLIST_QUERIES.get(mood_for_fallback, []), market=market, limit=limit)
+# ── Public entrypoint ────────────────────────────────────────────────────────
+def get_spotify_recommendations(
+    seed_genres: List[str],
+    features: Dict,                    # kept for signature compatibility; unused with search
+    limit: int = 10,
+    market: Optional[str] = "US",
+    mood_for_fallback: str = "ambiguous",
+) -> Dict:
+    """
+    Playlist-search-only implementation (no deprecated endpoints).
+    1) Try curated mood playlist names (strict/loose, with/without market, offsets).
+    2) If none, search by normalized genre keywords.
+    3) Special broader fallback for 'wind-down'/'sleep'.
+    Returns: {"tracks": [...], "source": "playlist-search", "playlist": "<name or None>"}
+    """
+    seeds = _normalize_seeds(seed_genres)
+
+    # 1) Mood playlist search
+    queries = MOOD_PLAYLIST_QUERIES.get(mood_for_fallback, []) or MOOD_PLAYLIST_QUERIES["ambiguous"]
+    tracks, plist_name = _search_playlist_and_get_tracks(queries, market, limit)
     if tracks:
-        return tracks
+        return {"tracks": tracks, "source": "playlist-search", "playlist": plist_name}
 
-    # 3) Genre playlist search fallback
-    # return _genre_playlist_fallback(seeds, market=market, limit=limit)
-    # replace the 3 return points in get_spotify_recommendations with:
-    return {"tracks": tracks, "source": "recommendations"}
+    # 2) Genre playlist search
+    tracks, plist_name = _search_genre_playlists(seeds, market, limit)
+    if tracks:
+        return {"tracks": tracks, "source": "playlist-search", "playlist": plist_name}
 
-    # ...
-    return {"tracks": _fallback_tracks_for_mood(mood_for_fallback, limit=limit), "source": "mood-playlist"}
+    # 3) Special broader fallback for "wind-down"/"sleep"
+    if mood_for_fallback in ("wind-down", "sleep"):
+        broad_terms = ["sleep", "calm", "peaceful", "lofi sleep", "ambient", "rest"]
+        tracks, plist_name = _search_playlist_and_get_tracks(broad_terms, market, limit)
+        if tracks:
+            return {"tracks": tracks, "source": "playlist-search", "playlist": plist_name}
 
-    # ...
-    return {"tracks": _genre_playlist_fallback(seeds, market=market, limit=limit), "source": "genre-playlist"}
+    # Last resort: empty but consistent payload
+    return {"tracks": [], "source": "playlist-search", "playlist": None}

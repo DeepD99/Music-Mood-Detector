@@ -71,29 +71,34 @@ if img_bytes:
     image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     st.image(image, caption="Your photo", use_container_width=True)
 
-    try:
-        if st.button("Analyze mood"):
-            result = infer_and_recommend(img_bytes, hint=intent_hint, focus_pref=focus_style)
-            mood = result["mood"]
+    # 🔍 Describe what the model sees
+    from transformers import BlipProcessor, BlipForConditionalGeneration
+    import torch
 
-            # get the spotify results + source label
-            tracks = result["tracks"]
-            source = result.get("source", "unknown")
+    @st.cache_resource
+    def load_caption_model():
+        processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+        return processor, model
 
-            st.subheader(f"Mood detected: {mood}")
-            st.caption(f"Source: {source}")  # 👈 show where tracks came from
+    processor, model = load_caption_model()
+    inputs = processor(image, return_tensors="pt")
+    with torch.no_grad():
+        out = model.generate(**inputs, max_new_tokens=40)
+    caption = processor.decode(out[0], skip_special_tokens=True)
 
-            if tracks:
-                for t in tracks:
-                    st.markdown(f"- **{t['name']}** — {t['artist']}  [Open]({t['url']})")
-            else:
-                st.info("No tracks found — try a different photo or mood.")
+    st.caption(f"🖼️ AI thinks this image shows: *{caption}*")
 
-            st.markdown("---")
-            st.caption("✨ Powered by Hugging Face Vision + Sentence Transformers")
+    if st.button("Analyze mood"):
+        result = infer_and_recommend(img_bytes, hint=intent_hint, focus_pref=focus_style)
+        mood = result["mood"]
+        tracks = result["tracks"]
+        source = result.get("source", "unknown")
 
-    except Exception as e:
-        st.error(f"Error: {e}")
+        st.subheader(f"Mood detected: {mood}")
+        st.caption(f"Source: {source}")
 
+        for t in tracks:
+            st.markdown(f"- **{t['name']}** — {t['artist']} [Open]({t['url']})")
 else:
     st.info("📸 Take or upload a picture to begin.")

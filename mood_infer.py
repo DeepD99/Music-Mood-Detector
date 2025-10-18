@@ -1,6 +1,8 @@
 from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer
 from sentence_transformers import SentenceTransformer, util
 from spotify_helper import get_spotify_recommendations
+from entity_detect import detect_entities
+from judge_llm import judge_image
 from PIL import Image
 import io, torch
 
@@ -48,6 +50,22 @@ def infer_and_recommend(image_bytes: bytes, hint: str, focus_pref: str):
         mood = hint.lower().replace(" ", "")
         explain = f"hint='{hint}'"
 
+    # ── NEW: detect notable entities (flags, celebs, skylines, logos) and append to explain
+    try:
+        ents = detect_entities(image_bytes)
+        if ents and ents.get("detections"):
+            parts = []
+            for d in ents["detections"]:
+                det_type = d.get("type", "?")
+                ident = d.get("identity") or {}
+                if "label" in ident and "score" in ident:
+                    parts.append(f"{det_type}→{ident['label']} ({ident['score']:.2f})")
+                else:
+                    parts.append(f"{det_type} ({d.get('score', 0):.2f})")
+            explain += " | entities: " + "; ".join(parts)
+    except Exception as _:
+        explain += " | entities: <error>"
+
     presets = {
         "focus":     (["study","electronic"], 95, 0.45, 0.4),         # lofi → study
         "workout":   (["edm","hip-hop"],    135, 0.85, 0.6),
@@ -70,13 +88,39 @@ def infer_and_recommend(image_bytes: bytes, hint: str, focus_pref: str):
     sg, tt, e, v = presets.get(mood, presets["ambiguous"])
     features = {"target_tempo": tt, "target_energy": e, "target_valence": v}
 
-    
-    try: 
+    draft = {
+        "caption": caption if hint == "Auto (detect)" else f"(hint) {hint}",
+        "mood": mood,
+        "seed_genres": sg,
+        "features": features,
+        "entities": explain  # you already appended entity summaries into explain
+    }
+
+    # 🔎 Ask the judge (non-blocking fail-safe)
+    try:
+        verdict = judge_image(image_bytes, draft)
+        fm = verdict.get("final_mood")
+        if isinstance(fm, str) and fm:
+            mood = fm  # accept judge mood
+        vsg = verdict.get("seed_genres") or []
+        if isinstance(vsg, list) and vsg:
+            sg = [g.strip().lower() for g in vsg if isinstance(g, str)][:3]
+        vfeat = verdict.get("features") or {}
+        # merge features conservatively
+        for k in ("target_tempo","target_energy","target_valence"):
+            if k in vfeat:
+                features[k] = vfeat[k]
+        # add judge reasoning to explain
+        if verdict.get("reasons"):
+            explain += f" | judge: {verdict['reasons']}"
+    except Exception as _:
+        pass
+
+    try:
         res = get_spotify_recommendations(
             sg, features, limit=10, market="US", mood_for_fallback=mood
         )
         tracks, source = res["tracks"], res["source"]
-
     except Exception as e:
         print("Spotify error:", e)
         tracks, source = [], "error"
@@ -86,6 +130,6 @@ def infer_and_recommend(image_bytes: bytes, hint: str, focus_pref: str):
         "seed_genres": sg,
         "features": features,
         "tracks": tracks,
-        "source": source,   # 👈 include this key
-        "explain": explain,
+        "source": source,
+        "explain": explain,  # now includes entities summary
     }
